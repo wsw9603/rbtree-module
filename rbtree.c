@@ -4,6 +4,7 @@
 #include <linux/slab.h>
 #include <linux/printk.h>
 #include <linux/rbtree.h>
+#include <linux/proc_fs.h>
 
 #define PAT_NULL     "\e[0m"
 #define PAT_BG_RED   "\e[45m"
@@ -11,6 +12,7 @@
 #define PAT_FG_RED   "\e[35m"
 #define PAT_FG_BLACK "\e[30m"
 
+static struct proc_dir_entry *my_proc_file;
 static struct rb_root my_root = RB_ROOT;
 
 struct my_struct {
@@ -60,6 +62,39 @@ static struct my_struct *my_rb_search(struct rb_root *root, int key)
 	return NULL;
 }
 
+static ssize_t my_read(struct file *file, char __user *buf, size_t len, loff_t *off)
+{
+	char kbuf[4096];
+	size_t kbuf_len = 4096, pos = 0, ret;
+	struct rb_node *node = rb_first(&my_root);
+	struct my_struct *data;
+
+	while (node) {
+		data = rb_entry(node, struct my_struct, rb_node);
+		ret = snprintf(kbuf + pos, kbuf_len - pos, "node (key:%d, addr:0x%llx)\n", data->key, (unsigned long long)data);
+		pos += ret;
+		if (pos >= kbuf_len)
+			break;
+		node = rb_next(node);
+	}
+
+	if (*off >= pos)
+		return 0;
+
+	if (pos - *off < len)
+		len = pos - *off;
+	if (copy_to_user(buf, kbuf + *off, len)) {
+		pr_err("copy_to_user failed\n");
+		return -EFAULT;
+	}
+	*off += len;
+	return len;
+}
+
+struct proc_ops mytree_proc_ops = {
+	.proc_read = my_read,
+};
+
 static int __init mytree_init(void)
 {
 	int i;
@@ -75,9 +110,9 @@ static int __init mytree_init(void)
 		my_rb_insert(&my_root, tmp);
 	}
 
-	pr_info("find node (key:%d, addr:0x%llx)\n", 6, (unsigned long long)my_rb_search(&my_root, 6));
-	pr_info("find node (key:%d, addr:0x%llx)\n", 9, (unsigned long long)my_rb_search(&my_root, 9));
-	pr_info("find node (key:%d, addr:0x%llx)\n", 18, (unsigned long long)my_rb_search(&my_root, 18));
+	my_proc_file = proc_create("rbtree", 0644, NULL, &mytree_proc_ops);
+	if (!my_proc_file)
+		pr_warn("create proc file failed\n");
 
 	return 0;
 }
@@ -88,6 +123,8 @@ static void __exit mytree_exit(void)
 	pr_info("find node (key:%d, addr:0x%llx)\n", 6, (unsigned long long)my_rb_search(&my_root, 6));
 	pr_info("find node (key:%d, addr:0x%llx)\n", 9, (unsigned long long)my_rb_search(&my_root, 9));
 	pr_info("find node (key:%d, addr:0x%llx)\n", 18, (unsigned long long)my_rb_search(&my_root, 18));
+
+	proc_remove(my_proc_file);
 
 	struct rb_node *node = rb_first(&my_root);
 	while (node) {
