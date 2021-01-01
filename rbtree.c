@@ -64,10 +64,15 @@ static struct my_struct *my_rb_search(struct rb_root *root, int key)
 
 static ssize_t my_read(struct file *file, char __user *buf, size_t len, loff_t *off)
 {
-	char kbuf[4096];
-	size_t kbuf_len = 4096, pos = 0, ret;
+	char *kbuf;
+	ssize_t ret;
+	size_t kbuf_len = 4096, pos = 0;
 	struct rb_node *node = rb_first(&my_root);
 	struct my_struct *data;
+
+	kbuf = kmalloc(4096, GFP_KERNEL);
+	if (!kbuf)
+		return -ENOMEM;
 
 	while (node) {
 		data = rb_entry(node, struct my_struct, rb_node);
@@ -78,17 +83,23 @@ static ssize_t my_read(struct file *file, char __user *buf, size_t len, loff_t *
 		node = rb_next(node);
 	}
 
-	if (*off >= pos)
-		return 0;
+	if (*off >= pos) {
+		ret = 0;
+		goto out;
+	}
 
 	if (pos - *off < len)
 		len = pos - *off;
 	if (copy_to_user(buf, kbuf + *off, len)) {
 		pr_err("copy_to_user failed\n");
-		return -EFAULT;
+		ret = -EFAULT;
+		goto out;
 	}
 	*off += len;
-	return len;
+	ret = len;
+out:
+	kfree(kbuf);
+	return ret;
 }
 
 static int parse_buf(char *buf, char *end)
@@ -164,26 +175,36 @@ static int parse_buf(char *buf, char *end)
 static ssize_t my_write(struct file *file, const char __user *buf, size_t len, loff_t *off)
 {
 	int ret;
-	char kbuf[4096];
-	char *it = kbuf, *end = it + len - 1, *p;
+	char *kbuf, *it, *end, *p;
 
-	if (copy_from_user(kbuf, buf, len))
-		return -EFAULT;
+	kbuf = kmalloc(4096, GFP_KERNEL);
+	if (!kbuf)
+		return -ENOMEM;
+
+	if (copy_from_user(kbuf, buf, len)) {
+		ret = -EFAULT;
+		goto out;
+	}
 
 	kbuf[len - 1] = '\0'; // 最后一个是回车符
 
+	it = kbuf;
+	end = kbuf + len - 1;
 	while (it < end) {
 		p = strchrnul(it, ';');
 		*p = '\0';
 
 		ret = parse_buf(it, p);
 		if (ret < 0)
-			return ret;
+			goto out;
 
 		it = p + 1;
 	}
 
-	return len;
+	ret = len;
+out:
+	kfree(kbuf);
+	return ret;
 }
 
 struct proc_ops mytree_proc_ops = {
