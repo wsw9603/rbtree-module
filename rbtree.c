@@ -91,8 +91,104 @@ static ssize_t my_read(struct file *file, char __user *buf, size_t len, loff_t *
 	return len;
 }
 
+static int parse_buf(char *buf, char *end)
+{
+	int ret;
+	char cmd = *(buf++), *p;
+	long long key;
+	struct my_struct *data;
+
+	while (buf < end) {
+		p = strchrnul(buf, ',');
+		*p = '\0';
+		ret = kstrtoll(buf, 0, &key);
+		if (ret < 0) {
+			pr_err("invalid input");
+			return ret;
+		}
+
+		switch (cmd) {
+		case 'a':
+			data = kmalloc(sizeof(*data), GFP_KERNEL);
+			if (!data)
+				return -ENOMEM;
+			data->key = (int)key;
+			if (!my_rb_insert(&my_root, data)) {
+				pr_err("node of key %d exist\n", (int)key);
+				kfree(data);
+				return -EEXIST;
+			}
+			break;
+		case 'd':
+			data = my_rb_search(&my_root, (int)key);
+			if (!data) {
+				pr_err("node of key %d doesn't exist\n",
+					(int)key);
+				return -EEXIST;
+			}
+			rb_erase(&data->rb_node, &my_root);
+			break;
+		case 's':
+			data = my_rb_search(&my_root, (int)key);
+			if (!data) {
+				pr_err("node of key %d doesn't exist\n",
+					(int)key);
+				return -EEXIST;
+			}
+			pr_info("node (key:%d, addr:0x%llx)\n",
+				data->key, (unsigned long long)data);
+			break;
+		default:
+			pr_err("invalid input");
+			return -EINVAL;
+		}
+
+		buf = p + 1;
+	}
+
+	return 0;
+}
+
+/*
+ * 写入格式:
+ * <操作命令>[操作数][,操作数][;<操作命令>[操作数][,操作数]][...]
+ * 支持的操作命令：
+ * a 插入节点
+ * d 删除节点
+ * s 显示节点
+ * 多条命令用分号隔开，依次执行，遇到出错的命令即停止并返回错误
+ * eg:
+ *    a12,3,5;d3;s12\n
+ */
+
+static ssize_t my_write(struct file *file, const char __user *buf, size_t len, loff_t *off)
+{
+	int ret;
+	char kbuf[4096];
+	char *it = kbuf, *end = it + len - 1, *p;
+
+	if (copy_from_user(kbuf, buf, len))
+		return -EFAULT;
+
+	kbuf[len - 1] = '\0'; // 最后一个是回车符
+
+	while (it < end) {
+		p = strchrnul(it, ';');
+		*p = '\0';
+
+		ret = parse_buf(it, p);
+		if (ret < 0)
+			return ret;
+
+		it = p + 1;
+	}
+
+	return len;
+}
+
 struct proc_ops mytree_proc_ops = {
 	.proc_read = my_read,
+	.proc_write = my_write,
 };
 
 static int __init mytree_init(void)
