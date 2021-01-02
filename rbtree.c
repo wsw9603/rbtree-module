@@ -5,6 +5,7 @@
 #include <linux/printk.h>
 #include <linux/rbtree.h>
 #include <linux/proc_fs.h>
+#include <linux/rbtree_augmented.h>
 
 #define PAT_NULL     "\e[0m"
 #define PAT_BG_RED   "\e[45m"
@@ -18,6 +19,8 @@ static struct rb_root my_root = RB_ROOT;
 struct my_struct {
 	int key;
 	struct rb_node rb_node;
+	struct list_head list_head; // 用作层次遍历时的队列元素
+	int no; // 节点在完全二叉树中的编号，根节点为0，左右子节点分别为2n+1,2n+2
 };
 
 static struct my_struct *my_rb_insert(struct rb_root *root, struct my_struct *data)
@@ -66,7 +69,7 @@ static enum {
 	order,
 	color,
 	nr_read_mod,
-} read_mod = order;
+} read_mod = color;
 #define KBUF_SIZE 4096
 
 static size_t order_show(char *buf)
@@ -90,9 +93,177 @@ static size_t order_show(char *buf)
 	return pos;
 }
 
+/*
+ * 获取红黑树的高度
+ */
+static int get_rb_hight(struct rb_root *root)
+{
+	int max_hight = 0, cur_hight = 0;
+	struct rb_node *cur = root->rb_node, *parent;
+
+	while (cur) {
+		if (cur->rb_left) {
+			cur = cur->rb_left;
+			cur_hight++;
+			max_hight = max_hight > cur_hight ?  max_hight : cur_hight;
+			continue;
+		}
+		if (cur->rb_right) {
+			cur = cur->rb_right;
+			cur_hight++;
+			max_hight = max_hight > cur_hight ?  max_hight : cur_hight;
+			continue;
+		}
+
+		// pr_info("node %d\n", rb_entry(cur, struct my_struct, rb_node)->key);
+		parent = rb_parent(cur);
+		while (parent &&
+		       (cur == parent->rb_right || !parent->rb_right)) {
+			cur = parent;
+			parent = rb_parent(cur);
+			cur_hight--;
+		}
+		if (!parent)
+			break;
+		// pr_info("node %d\n", rb_entry(parent, struct my_struct, rb_node)->key);
+		cur = parent->rb_right;
+	}
+
+	return max_hight;
+}
+
+/*
+                 ______________xx______________
+                /                              \
+         ______xx______                  ______xx______
+        /              \                /              \
+     __xx__          __xx__          __xx__          __xx__
+    /      \        /      \        /      \        /      \
+   xx      xx      xx      xx      xx      xx      xx      xx
+  /  \    /  \    /  \    /  \    /  \    /  \    /  \    /  \
+ xx  xx  xx  xx  xx  xx  xx  xx  xx  xx  xx  xx  xx  xx  xx  xx
+
+ 将一棵红黑树以如上格式输出到屏幕上
+ 除叶子节点外，每层的组成部分为
+     数字层:   <空格><下划线><数字><下划线><空格>
+     斜杠层:<空格></><--------空格--------><\><空格>
+     以叶子节点为第0层，则第n层各项的宽度为:
+     数字层:   <2^n+1><2^n-2><2><2^n-2><2^n+1>
+     斜杠层:  <2^n></><   2^(n+1)-2   ><\><2^n>
+*/
+
+static size_t
+print_rb_key_level(struct my_struct *data, int hight, char *buf, size_t len)
+{
+	size_t pos = 0;
+	int space_len = (1 << hight) + 1;
+	int underscore_len = (1 << hight) - 2;
+
+	if (data->rb_node.rb_left) {
+		memset(buf, ' ', space_len);
+		memset(buf + space_len, '_', underscore_len);
+	} else
+		memset(buf, ' ', space_len + underscore_len);
+	pos += space_len + underscore_len;
+
+	pos += snprintf(buf + pos, len - pos, "%s%2d" PAT_NULL,
+			rb_is_red(&data->rb_node) ?
+			PAT_BG_RED : PAT_BG_BLACK,
+			data->key);
+
+	if (data->rb_node.rb_right) {
+		memset(buf + pos, '_', underscore_len);
+		memset(buf + pos + underscore_len, ' ', space_len);
+	} else
+		memset(buf + pos, ' ', space_len + underscore_len);
+	pos += space_len + underscore_len;
+
+	return pos;
+}
+
+static size_t
+print_rb_slash_level(struct my_struct *data, int hight, char *buf, size_t len)
+{
+	int ele_width = 1 << (hight + 2);
+
+	memset(buf, ' ', ele_width);
+	if (data->rb_node.rb_left)
+		buf[1 << hight] = '/';
+	if (data->rb_node.rb_right)
+		buf[ele_width - (1 << hight) - 1] = '\\';
+
+	return ele_width;
+}
+
 static size_t color_show(char *buf)
 {
-	return 0;
+	size_t pos = 0;
+	LIST_HEAD(h1);
+	LIST_HEAD(h2);
+	struct list_head *p1 = &h1, *p2 = &h2, *tmp;
+	struct rb_node *node = my_root.rb_node;
+	struct my_struct *n, *data_tmp;
+	struct my_struct *data = rb_entry(node, struct my_struct, rb_node);
+
+	int lvl = 0;
+	int hight = get_rb_hight(&my_root);
+
+	if (!node)
+		return 0;
+	list_add_tail(&data->list_head, p1);
+	data->no = 0;
+
+	while (!list_empty(p1)) {
+		int start_no = (1 << lvl) - 1;
+		int ele_width = 1 << (hight - lvl + 2);
+
+		list_for_each_entry_safe(data, n, p1, list_head) {
+			while (start_no < data->no) {
+				memset(buf + pos, ' ', ele_width);
+				start_no++;
+				pos += ele_width;
+			}
+
+			pos += print_rb_key_level(data, hight - lvl, buf + pos,
+						  KBUF_SIZE - pos);
+			start_no++;
+		}
+		buf[pos++] = '\n';
+
+		start_no = (1 << lvl) - 1;
+		list_for_each_entry_safe(data, n, p1, list_head) {
+			list_del(&data->list_head);
+
+			while (start_no < data->no) {
+				memset(buf + pos, ' ', ele_width);
+				start_no++;
+				pos += ele_width;
+			}
+			pos += print_rb_slash_level(data, hight - lvl, buf + pos,
+						    KBUF_SIZE - pos);
+			start_no++;
+
+			if (data->rb_node.rb_left) {
+				data_tmp = rb_entry(data->rb_node.rb_left, struct my_struct, rb_node);
+				data_tmp->no = data->no * 2 + 1;
+				list_add_tail(&data_tmp->list_head, p2);
+			}
+
+			if (data->rb_node.rb_right) {
+				data_tmp = rb_entry(data->rb_node.rb_right, struct my_struct, rb_node);
+				data_tmp->no = data->no * 2 + 2;
+				list_add_tail(&data_tmp->list_head, p2);
+			}
+		}
+		buf[pos++] = '\n';
+
+		tmp = p1;
+		p1 = p2;
+		p2 = tmp;
+		lvl++;
+	}
+
+	return pos;
 }
 
 static ssize_t my_read(struct file *file, char __user *buf, size_t len, loff_t *off)
@@ -262,7 +433,7 @@ static int __init mytree_init(void)
 			return 0;
 
 		tmp->key = i;
-		pr_info("insert node (key:%d, addr:0x%llx)\n", tmp->key, (unsigned long long)tmp);
+//		pr_info("insert node (key:%d, addr:0x%llx)\n", tmp->key, (unsigned long long)tmp);
 
 		my_rb_insert(&my_root, tmp);
 	}
@@ -287,7 +458,7 @@ static void __exit mytree_exit(void)
 		tmp = rb_entry(node, struct my_struct, rb_node);
 
 		rb_erase(node, &my_root);
-		pr_info("erase node (key:%d, addr:0x%llx)\n", tmp->key, (unsigned long long)tmp);
+//		pr_info("erase node (key:%d, addr:0x%llx)\n", tmp->key, (unsigned long long)tmp);
 
 		kfree(tmp);
 
