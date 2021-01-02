@@ -277,15 +277,14 @@ module_init(mytree_init);
 
 static void __exit mytree_exit(void)
 {
-	pr_info("find node (key:%d, addr:0x%llx)\n", 6, (unsigned long long)my_rb_search(&my_root, 6));
-	pr_info("find node (key:%d, addr:0x%llx)\n", 9, (unsigned long long)my_rb_search(&my_root, 9));
-	pr_info("find node (key:%d, addr:0x%llx)\n", 18, (unsigned long long)my_rb_search(&my_root, 18));
+	struct rb_node *node;
+	struct my_struct *tmp;
 
 	proc_remove(my_proc_file);
 
-	struct rb_node *node = rb_first(&my_root);
+	node = rb_first(&my_root);
 	while (node) {
-		struct my_struct *tmp = rb_entry(node, struct my_struct, rb_node);
+		tmp = rb_entry(node, struct my_struct, rb_node);
 
 		rb_erase(node, &my_root);
 		pr_info("erase node (key:%d, addr:0x%llx)\n", tmp->key, (unsigned long long)tmp);
