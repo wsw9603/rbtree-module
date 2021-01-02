@@ -62,25 +62,58 @@ static struct my_struct *my_rb_search(struct rb_root *root, int key)
 	return NULL;
 }
 
+static enum {
+	order,
+	color,
+	nr_read_mod,
+} read_mod = order;
+#define KBUF_SIZE 4096
+
+static size_t order_show(char *buf)
+{
+	int ret;
+	size_t pos = 0;
+	struct my_struct *data;
+	struct rb_node *node = rb_first(&my_root);
+
+	while (node) {
+		data = rb_entry(node, struct my_struct, rb_node);
+		ret = snprintf(buf + pos, KBUF_SIZE - pos, "node (key:%d, addr:0x%llx)\n", data->key, (unsigned long long)data);
+		pos += ret;
+		if (pos >= KBUF_SIZE) {
+			pr_warn("buf overflow!!\n");
+			break;
+		}
+		node = rb_next(node);
+	}
+
+	return pos;
+}
+
+static size_t color_show(char *buf)
+{
+	return 0;
+}
+
 static ssize_t my_read(struct file *file, char __user *buf, size_t len, loff_t *off)
 {
 	char *kbuf;
 	ssize_t ret;
-	size_t kbuf_len = 4096, pos = 0;
-	struct rb_node *node = rb_first(&my_root);
-	struct my_struct *data;
+	size_t pos = 0;
 
-	kbuf = kmalloc(4096, GFP_KERNEL);
+	kbuf = kmalloc(KBUF_SIZE, GFP_KERNEL);
 	if (!kbuf)
 		return -ENOMEM;
 
-	while (node) {
-		data = rb_entry(node, struct my_struct, rb_node);
-		ret = snprintf(kbuf + pos, kbuf_len - pos, "node (key:%d, addr:0x%llx)\n", data->key, (unsigned long long)data);
-		pos += ret;
-		if (pos >= kbuf_len)
-			break;
-		node = rb_next(node);
+	switch (read_mod) {
+	case order:
+		pos = order_show(kbuf);
+		break;
+	case color:
+		pos = color_show(kbuf);
+		break;
+	default:
+		BUG();
 	}
 
 	if (*off >= pos) {
@@ -149,6 +182,12 @@ static int parse_buf(char *buf, char *end)
 			pr_info("node (key:%d, addr:0x%llx)\n",
 				data->key, (unsigned long long)data);
 			break;
+		case 'c':
+			if (key >= 0 && key < nr_read_mod) {
+				read_mod = key;
+				break;
+			}
+			/* fall through */
 		default:
 			pr_err("invalid input");
 			return -EINVAL;
@@ -164,9 +203,10 @@ static int parse_buf(char *buf, char *end)
  * 写入格式:
  * <操作命令>[操作数][,操作数][;<操作命令>[操作数][,操作数]][...]
  * 支持的操作命令：
- * a 插入节点
- * d 删除节点
- * s 显示节点
+ * a 插入节点 add
+ * d 删除节点 delete
+ * s 显示节点 show
+ * c 设置读文件的显示模式 config
  * 多条命令用分号隔开，依次执行，遇到出错的命令即停止并返回错误
  * eg:
  *    a12,3,5;d3;s12\n
@@ -177,7 +217,7 @@ static ssize_t my_write(struct file *file, const char __user *buf, size_t len, l
 	int ret;
 	char *kbuf, *it, *end, *p;
 
-	kbuf = kmalloc(4096, GFP_KERNEL);
+	kbuf = kmalloc(KBUF_SIZE, GFP_KERNEL);
 	if (!kbuf)
 		return -ENOMEM;
 
